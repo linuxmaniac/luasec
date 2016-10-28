@@ -208,6 +208,77 @@ static DH *dhparam_cb(SSL *ssl, int is_export, int keylength)
 }
 
 /**
+ * pushes string value of callback state
+ * and {type, desc} if SSL_CB_ALERT
+ */
+static int cbstate(lua_State *L, int where, int ret)
+{
+  if (where & SSL_CB_HANDSHAKE_START) {
+    lua_pushstring(L, "HANDSHAKE_START");
+  } else if (where & SSL_CB_HANDSHAKE_DONE) {
+    lua_pushstring(L, "HANDSHAKE_DONE");
+  } else if (where & SSL_CB_READ_ALERT) {
+    lua_pushstring(L, "READ_ALERT");
+  } else if (where & SSL_CB_WRITE_ALERT) {
+    lua_pushstring(L, "WRITE_ALERT");
+  } else if (where & SSL_CB_ACCEPT_LOOP) {
+    lua_pushstring(L, "ACCEPT_LOOP");
+  } else if (where & SSL_CB_ACCEPT_EXIT) {
+    lua_pushstring(L, "ACCEPT_EXIT");
+  } else if (where & SSL_CB_CONNECT_LOOP) {
+    lua_pushstring(L, "CONNECT_LOOP");
+  } else if (where & SSL_CB_CONNECT_EXIT) {
+    lua_pushstring(L, "CONNECT_EXIT");
+  } else if (where & SSL_CB_LOOP) {
+    lua_pushstring(L, "LOOP");
+  } else if (where & SSL_CB_EXIT) {
+    lua_pushstring(L, "EXIT");
+  } else if (where & SSL_CB_READ) {
+    lua_pushstring(L, "READ");
+  } else if (where & SSL_CB_WRITE) {
+    lua_pushstring(L, "WRITE");
+  } else if (where & SSL_CB_ALERT) {
+    lua_pushstring(L, "ALERT");
+  } else {
+    lua_pushnil(L);
+  }
+
+  if (where & SSL_CB_ALERT) {
+    lua_newtable(L);
+    lua_pushnumber(L, 1);
+    lua_pushstring(L, SSL_alert_type_string_long(ret));
+    lua_settable(L, -3);
+    lua_pushnumber(L, 2);
+    lua_pushstring(L, SSL_alert_desc_string_long(ret));
+    lua_settable(L, -3);
+  } else {
+    lua_pushnil(L);
+  }
+  return 2;
+}
+
+/**
+ * Call Lua user function to get obtain state information for SSL objects
+ * created from ctx during connection setup and use
+ */
+static void info_cb(const SSL *ssl, int where, int ret)
+{
+  lua_State *L;
+  SSL_CTX *ctx = SSL_get_SSL_CTX(ssl);
+  p_context pctx = (p_context)SSL_CTX_get_app_data(ctx);
+
+  L = pctx->L;
+
+  /* Get the callback */
+  luaL_getmetatable(L, "SSL:Info:Registry");
+  lua_pushlightuserdata(L, (void*)ctx);
+  lua_gettable(L, -2);
+
+  /* Invoke the callback */
+  lua_call(L, cbstate(L, where, ret), 0);
+}
+
+/**
  * Set the "ignore purpose" before to start verifing the certificate chain.
  */
 static int cert_verify_cb(X509_STORE_CTX *x509_ctx, void *ptr)
@@ -524,6 +595,23 @@ static int set_dhparam(lua_State *L)
 }
 
 /**
+ * Configure info callback.
+ */
+static int set_info(lua_State *L)
+{
+  SSL_CTX *ctx = lsec_checkcontext(L, 1);
+  SSL_CTX_set_info_callback(ctx, info_cb);
+
+  /* Save callback */
+  luaL_getmetatable(L, "SSL:Info:Registry");
+  lua_pushlightuserdata(L, (void*)ctx);
+  lua_pushvalue(L, 2);
+  lua_settable(L, -3);
+
+  return 0;
+}
+
+/**
  * Set elliptic curve.
  */
 #ifdef OPENSSL_NO_ECDH
@@ -573,6 +661,7 @@ static luaL_Reg funcs[] = {
   {"setcipher",    set_cipher},
   {"setdepth",     set_depth},
   {"setdhparam",   set_dhparam},
+  {"setinfo",      set_info},
   {"setcurve",     set_curve},
   {"setverify",    set_verify},
   {"setoptions",   set_options},
@@ -591,6 +680,10 @@ static int meth_destroy(lua_State *L)
   if (ctx->context) {
     /* Clear registries */
     luaL_getmetatable(L, "SSL:DH:Registry");
+    lua_pushlightuserdata(L, (void*)ctx->context);
+    lua_pushnil(L);
+    lua_settable(L, -3);
+    luaL_getmetatable(L, "SSL:Info:Registry");
     lua_pushlightuserdata(L, (void*)ctx->context);
     lua_pushnil(L);
     lua_settable(L, -3);
@@ -721,6 +814,7 @@ int lsec_getmode(lua_State *L, int idx)
 LSEC_API int luaopen_ssl_context(lua_State *L)
 {
   luaL_newmetatable(L, "SSL:DH:Registry");      /* Keep all DH callbacks */
+  luaL_newmetatable(L, "SSL:Info:Registry");    /* Keep all info callbacks */
   luaL_newmetatable(L, "SSL:Verify:Registry");  /* Keep all verify flags */
   luaL_newmetatable(L, "SSL:Context");
   luaL_register(L, NULL, meta);
@@ -738,6 +832,7 @@ LSEC_API int luaopen_ssl_context(lua_State *L)
 LSEC_API int luaopen_ssl_context(lua_State *L)
 {
   luaL_newmetatable(L, "SSL:DH:Registry");      /* Keep all DH callbacks */
+  luaL_newmetatable(L, "SSL:Info:Registry");    /* Keep all info callbacks */
   luaL_newmetatable(L, "SSL:Verify:Registry");  /* Keep all verify flags */
   luaL_newmetatable(L, "SSL:Context");
   luaL_setfuncs(L, meta, 0);
