@@ -102,6 +102,12 @@ local function newcontext(cfg)
       succ, msg = optexec(ctx.setverifyext, cfg.verifyext, ctx)
       if not succ then return nil, msg end
    end
+   if cfg.info then
+      if type(cfg.info) ~= "function" then
+        return nil, "invalid info parameter type"
+      end
+      context.setinfo(ctx, cfg.info)
+   end
 
    return ctx
 end
