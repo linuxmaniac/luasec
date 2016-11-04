@@ -85,6 +85,10 @@ static int meth_destroy(lua_State *L)
     lua_pushlightuserdata(L, (void*)ssl->ssl);
     lua_pushnil(L);
     lua_settable(L, -3);
+    luaL_getmetatable(L, "SSL:Info:Registry");
+    lua_pushlightuserdata(L, (void*)ssl->ssl);
+    lua_pushnil(L);
+    lua_settable(L, -3);
     /* Destroy the object */
     SSL_free(ssl->ssl);
     ssl->ssl = NULL;
@@ -653,6 +657,105 @@ static int meth_info(lua_State *L)
   return 4;
 }
 
+/**
+ * pushes string value of callback state
+ * and {type, desc} if SSL_CB_ALERT
+ */
+static void cbstate(lua_State *L, int where, int ret)
+{
+  if (where & SSL_CB_HANDSHAKE_START) {
+    lua_pushstring(L, "HANDSHAKE_START");
+  } else if (where & SSL_CB_HANDSHAKE_DONE) {
+    lua_pushstring(L, "HANDSHAKE_DONE");
+  } else if (where & SSL_CB_READ_ALERT) {
+    lua_pushstring(L, "READ_ALERT");
+  } else if (where & SSL_CB_WRITE_ALERT) {
+    lua_pushstring(L, "WRITE_ALERT");
+  } else if (where & SSL_CB_ACCEPT_LOOP) {
+    lua_pushstring(L, "ACCEPT_LOOP");
+  } else if (where & SSL_CB_ACCEPT_EXIT) {
+    lua_pushstring(L, "ACCEPT_EXIT");
+  } else if (where & SSL_CB_CONNECT_LOOP) {
+    lua_pushstring(L, "CONNECT_LOOP");
+  } else if (where & SSL_CB_CONNECT_EXIT) {
+    lua_pushstring(L, "CONNECT_EXIT");
+  } else if (where & SSL_CB_LOOP) {
+    lua_pushstring(L, "LOOP");
+  } else if (where & SSL_CB_EXIT) {
+    lua_pushstring(L, "EXIT");
+  } else if (where & SSL_CB_READ) {
+    lua_pushstring(L, "READ");
+  } else if (where & SSL_CB_WRITE) {
+    lua_pushstring(L, "WRITE");
+  } else if (where & SSL_CB_ALERT) {
+    lua_pushstring(L, "ALERT");
+  } else {
+    lua_pushnil(L);
+  }
+
+  if (where & SSL_CB_ALERT) {
+    lua_newtable(L);
+    lua_pushnumber(L, 1);
+    lua_pushstring(L, SSL_alert_type_string_long(ret));
+    lua_settable(L, -3);
+    lua_pushnumber(L, 2);
+    lua_pushstring(L, SSL_alert_desc_string_long(ret));
+    lua_settable(L, -3);
+  } else {
+    lua_pushnil(L);
+  }
+}
+
+/**
+ * Call Lua user function to get obtain state information for SSL objects
+ * created from ctx during connection setup and use
+ */
+static void info_cb(const SSL *ssl, int where, int ret)
+{
+  SSL_CTX *ctx = SSL_get_SSL_CTX(ssl);
+  lua_State *L = ((p_context)SSL_CTX_get_app_data(ctx))->L;
+
+  /* Get the callback */
+  luaL_getmetatable(L, "SSL:Info:Registry");
+  lua_pushlightuserdata(L, (void*)ssl);
+  lua_gettable(L, -2);
+  lua_pushstring(L, "cb");
+  lua_gettable(L, -2);
+  lua_pushstring(L, "lua_ssl");
+  lua_gettable(L, -3);
+
+  /* translate parameters to string, {string, string} */
+  cbstate(L, where, ret);
+
+  /* Invoke the callback */
+  lua_call(L, 3, 0);
+}
+
+static int meth_setinfocb(lua_State *L)
+{
+  p_ssl ssl = (p_ssl)luaL_checkudata(L, 1, "SSL:Connection");
+
+  if(!lua_isfunction(L, 2)) {
+    return -1;
+  }
+
+  /* Save p_ssl in the register */
+  luaL_getmetatable(L, "SSL:Info:Registry");
+  lua_pushlightuserdata(L, (void*)ssl->ssl);
+  lua_newtable(L);
+  lua_pushstring(L, "cb");
+  lua_pushvalue(L, 2);
+  lua_settable(L, -3);
+  lua_pushstring(L, "lua_ssl");
+  lua_pushvalue(L, 1);
+  lua_settable(L, -3);
+  lua_settable(L, -3);
+
+  SSL_set_info_callback(ssl->ssl, info_cb);
+
+  return 0;
+}
+
 static int meth_copyright(lua_State *L)
 {
   lua_pushstring(L, "LuaSec 0.5.1 - Copyright (C) 2006-2015 Bruno Silvestre"
@@ -683,6 +786,7 @@ static luaL_Reg methods[] = {
   {"receive",             meth_receive},
   {"send",                meth_send},
   {"settimeout",          meth_settimeout},
+  {"setinfocallback",     meth_setinfocb},
   {"want",                meth_want},
   {NULL,                  NULL}
 };
@@ -757,6 +861,8 @@ LSEC_API int luaopen_ssl_core(lua_State *L)
   /* Initialize internal library */
   socket_open();
 #endif
+
+  luaL_newmetatable(L, "SSL:Info:Registry");
 
   /* Register the functions and tables */
   luaL_newmetatable(L, "SSL:Connection");
